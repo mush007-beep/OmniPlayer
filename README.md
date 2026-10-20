@@ -139,8 +139,9 @@ Additional documentation will be added as features are implemented. Planned docs
 
 ## License
 
-License information has not yet been added. Until a license is provided, the repository’s default copyright rules apply.
+## License
 
+This project is licensed under the MIT License. See the [(LICENSE) file for details.
 ## Disclaimer
 
 OmniPlayer Pro is an independent project and is not affiliated with Google, Gemini, or any third-party media platform. Feature names and plans are subject to change.
