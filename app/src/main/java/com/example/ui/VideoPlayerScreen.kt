@@ -66,9 +66,16 @@ fun VideoPlayerScreen(
     val currentSubtitleLine by viewModel.currentSubtitleLine.collectAsState()
     val isSubtitlesVisible by viewModel.isSubtitlesVisible.collectAsState()
     val isAutoDubbingVoiceEnabled by viewModel.isAutoDubbingVoiceEnabled.collectAsState()
+    val subtitleFontSize by viewModel.subtitleFontSize.collectAsState()
+    val subtitleTextColor by viewModel.subtitleTextColor.collectAsState()
     val isGeneratingSubtitles by viewModel.isGeneratingSubtitles.collectAsState()
+    val isAutoDubbingInProgress by viewModel.isAutoDubbingInProgress.collectAsState()
+    val autoDubProgress by viewModel.autoDubProgress.collectAsState()
+    val autoDubStageText by viewModel.autoDubStageText.collectAsState()
     val selectedDubLanguage by viewModel.selectedDubLanguage.collectAsState()
     val activeSubtitles by viewModel.activeSubtitles.collectAsState()
+    val isDubbingCached by viewModel.isDubbingCached.collectAsState()
+    val cacheStatusText by viewModel.cacheStatusText.collectAsState()
     val availableDubLanguages = viewModel.availableDubLanguages
 
     var showDubbingStudioSheet by remember { mutableStateOf(false) }
@@ -170,22 +177,54 @@ fun VideoPlayerScreen(
                     .padding(bottom = 90.dp, start = 16.dp, end = 16.dp),
                 horizontalAlignment = Alignment.CenterHorizontally
             ) {
-                // Auto-Dubbing Status Badge
-                if (isAutoDubbingVoiceEnabled) {
-                    Box(
-                        modifier = Modifier
-                            .background(Color(0xFF00C853).copy(alpha = 0.85f), RoundedCornerShape(12.dp))
-                            .padding(horizontal = 8.dp, vertical = 2.dp)
-                    ) {
-                        Text(
-                            text = "🔊 Gemini Auto-Dub: ${selectedDubLanguage.name}",
-                            color = Color.White,
-                            fontSize = 10.sp,
-                            fontWeight = FontWeight.Bold
-                        )
+                // Auto-Dubbing & AI Dubbing Cache Status Badges
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                ) {
+                    if (isAutoDubbingVoiceEnabled) {
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFF00C853).copy(alpha = 0.85f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                        ) {
+                            Text(
+                                text = "🔊 Gemini Auto-Dub: ${selectedDubLanguage.name}",
+                                color = Color.White,
+                                fontSize = 10.sp,
+                                fontWeight = FontWeight.Bold
+                            )
+                        }
                     }
-                    Spacer(modifier = Modifier.height(6.dp))
+
+                    if (isDubbingCached) {
+                        Box(
+                            modifier = Modifier
+                                .background(Color(0xFF00E676).copy(alpha = 0.25f), RoundedCornerShape(12.dp))
+                                .padding(horizontal = 8.dp, vertical = 2.dp)
+                                .testTag("overlay_ai_dubbing_cache_badge")
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(3.dp)
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Default.Bolt,
+                                    contentDescription = null,
+                                    tint = Color(0xFF00E676),
+                                    modifier = Modifier.size(11.dp)
+                                )
+                                Text(
+                                    text = "AI Dub Cached (0 API calls)",
+                                    color = Color(0xFF00E676),
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold
+                                )
+                            }
+                        }
+                    }
                 }
+                Spacer(modifier = Modifier.height(6.dp))
 
                 // Generating Indicator
                 if (isGeneratingSubtitles) {
@@ -206,16 +245,23 @@ fun VideoPlayerScreen(
                         }
                     }
                 } else if (isSubtitlesVisible && currentSubtitleLine.isNotBlank()) {
-                    // Subtitle Line Overlay
+                    // Subtitle Line Overlay with persisted styling
+                    val textColor = when (subtitleTextColor) {
+                        "Cyan" -> MxCyan
+                        "White" -> Color.White
+                        "Green" -> Color(0xFF00E676)
+                        else -> Color(0xFFFFEB3B) // Default Yellow
+                    }
                     Box(
                         modifier = Modifier
                             .background(Color.Black.copy(alpha = 0.8f), RoundedCornerShape(8.dp))
                             .padding(horizontal = 14.dp, vertical = 8.dp)
+                            .testTag("subtitle_text_overlay")
                     ) {
                         Text(
                             text = currentSubtitleLine,
-                            color = Color(0xFFFFEB3B),
-                            fontSize = 14.sp,
+                            color = textColor,
+                            fontSize = subtitleFontSize.sp,
                             fontWeight = FontWeight.SemiBold,
                             textAlign = TextAlign.Center
                         )
@@ -260,6 +306,123 @@ fun VideoPlayerScreen(
                             Text("Seek: $seekDeltaText", color = Color.White, fontWeight = FontWeight.Bold)
                         }
                         GestureType.NONE -> {}
+                    }
+                }
+            }
+        }
+
+        // VISUAL PROGRESS INDICATOR FOR AUTO-DUBBING (OVERLAY)
+        AnimatedVisibility(
+            visible = isAutoDubbingInProgress,
+            enter = fadeIn(),
+            exit = fadeOut(),
+            modifier = Modifier
+                .align(Alignment.Center)
+                .padding(horizontal = 24.dp)
+                .testTag("auto_dubbing_progress_overlay")
+        ) {
+            Card(
+                shape = RoundedCornerShape(20.dp),
+                colors = CardDefaults.cardColors(containerColor = Color(0xFF0C1324).copy(alpha = 0.95f)),
+                border = BorderStroke(1.5.dp, MxCyan),
+                elevation = CardDefaults.cardElevation(defaultElevation = 12.dp),
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Column(
+                    modifier = Modifier.padding(20.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Row(verticalAlignment = Alignment.CenterVertically) {
+                            Icon(
+                                imageVector = Icons.Default.AutoAwesome,
+                                contentDescription = null,
+                                tint = MxCyan,
+                                modifier = Modifier.size(24.dp)
+                            )
+                            Spacer(modifier = Modifier.width(8.dp))
+                            Text(
+                                text = "AI Auto-Dubbing & Subtitles",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 15.sp,
+                                color = Color.White
+                            )
+                        }
+
+                        // Percentage Badge
+                        Box(
+                            modifier = Modifier
+                                .background(MxCyan.copy(alpha = 0.2f), RoundedCornerShape(8.dp))
+                                .padding(horizontal = 8.dp, vertical = 3.dp)
+                        ) {
+                            Text(
+                                text = "${(autoDubProgress * 100).toInt()}%",
+                                color = MxCyan,
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 13.sp
+                            )
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Conversion Direction Badge
+                    Row(
+                        modifier = Modifier
+                            .background(Color.White.copy(alpha = 0.08f), RoundedCornerShape(12.dp))
+                            .padding(horizontal = 12.dp, vertical = 6.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        Text("🇬🇧 Original Audio", color = Color.White.copy(alpha = 0.7f), fontSize = 12.sp)
+                        Icon(Icons.Default.ArrowForward, contentDescription = null, tint = MxCyan, modifier = Modifier.size(14.dp))
+                        Text(
+                            text = "${selectedDubLanguage.flagEmoji} ${selectedDubLanguage.name}",
+                            color = MxCyan,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 12.sp
+                        )
+                    }
+
+                    Spacer(modifier = Modifier.height(16.dp))
+
+                    // Animated Visual Progress Bar
+                    LinearProgressIndicator(
+                        progress = { autoDubProgress },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(8.dp)
+                            .clip(RoundedCornerShape(4.dp)),
+                        color = MxCyan,
+                        trackColor = Color.White.copy(alpha = 0.15f)
+                    )
+
+                    Spacer(modifier = Modifier.height(12.dp))
+
+                    // Current Step / Stage Description
+                    Text(
+                        text = autoDubStageText,
+                        color = Color.White,
+                        fontSize = 13.sp,
+                        fontWeight = FontWeight.Medium,
+                        textAlign = TextAlign.Center
+                    )
+
+                    Spacer(modifier = Modifier.height(14.dp))
+
+                    // Steps Row: 1. Audio -> 2. Gemini Translation -> 3. Voiceover
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        StepIndicatorItem("1. Audio", autoDubProgress >= 0.15f, autoDubProgress >= 0.40f)
+                        StepIndicatorItem("2. Gemini AI", autoDubProgress >= 0.40f, autoDubProgress >= 0.70f)
+                        StepIndicatorItem("3. Neural Voice", autoDubProgress >= 0.70f, autoDubProgress >= 1.0f)
                     }
                 }
             }
@@ -434,10 +597,16 @@ fun VideoPlayerScreen(
 
                         // "Generate AI Subtitles" Trigger Button
                         Button(
-                            onClick = { viewModel.loadSubtitlesForCurrentVideo(selectedDubLanguage) },
+                            onClick = {
+                                if (isDubbingCached) {
+                                    showDubbingStudioSheet = true
+                                } else {
+                                    viewModel.loadSubtitlesForCurrentVideo(selectedDubLanguage, forceRefresh = false)
+                                }
+                            },
                             shape = RoundedCornerShape(14.dp),
                             colors = ButtonDefaults.buttonColors(
-                                containerColor = MxBlue,
+                                containerColor = if (isDubbingCached) Color(0xFF00796B) else MxBlue,
                                 contentColor = Color.White
                             ),
                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 4.dp),
@@ -453,6 +622,15 @@ fun VideoPlayerScreen(
                                 )
                                 Spacer(modifier = Modifier.width(6.dp))
                                 Text("Generating...", fontSize = 11.sp, fontWeight = FontWeight.Bold)
+                            } else if (isDubbingCached) {
+                                Icon(
+                                    Icons.Default.Bolt,
+                                    contentDescription = null,
+                                    modifier = Modifier.size(14.dp),
+                                    tint = Color(0xFF00E676)
+                                )
+                                Spacer(modifier = Modifier.width(6.dp))
+                                Text("AI Dub Cached", fontSize = 11.sp, fontWeight = FontWeight.Bold)
                             } else {
                                 Icon(
                                     Icons.Default.AutoAwesome,
@@ -793,6 +971,180 @@ fun VideoPlayerScreen(
                         }
                     }
 
+                    // DataStore Persistence Note & Subtitle Settings Card
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("datastore_subtitle_settings_card")
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp)
+                            ) {
+                                Icon(
+                                    Icons.Default.CheckCircle,
+                                    contentDescription = null,
+                                    tint = Color(0xFF00E676),
+                                    modifier = Modifier.size(16.dp)
+                                )
+                                Text(
+                                    text = "Settings automatically saved in DataStore",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 12.sp,
+                                    color = Color(0xFF00E676)
+                                )
+                            }
+                            Text(
+                                text = "Your selected language (${selectedDubLanguage.name}), voice dubbing (${if (isAutoDubbingVoiceEnabled) "ON" else "OFF"}), and subtitle visibility will be remembered across all video sessions.",
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                modifier = Modifier.padding(top = 2.dp, bottom = 8.dp)
+                            )
+
+                            Divider(modifier = Modifier.padding(vertical = 4.dp), color = MaterialTheme.colorScheme.outline.copy(alpha = 0.2f))
+
+                            // Subtitle Font Size selector
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Subtitle Text Size", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    listOf(12 to "Small", 14 to "Medium", 18 to "Large").forEach { (size, label) ->
+                                        FilterChip(
+                                            selected = subtitleFontSize == size,
+                                            onClick = { viewModel.setSubtitleFontSize(size) },
+                                            label = { Text(label, fontSize = 11.sp) },
+                                            modifier = Modifier.testTag("subtitle_size_chip_$size")
+                                        )
+                                    }
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(6.dp))
+
+                            // Subtitle Color selector
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Text("Subtitle Color", fontSize = 12.sp, fontWeight = FontWeight.SemiBold)
+                                Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    listOf("Yellow", "Cyan", "White").forEach { colorName ->
+                                        FilterChip(
+                                            selected = subtitleTextColor == colorName,
+                                            onClick = { viewModel.setSubtitleTextColor(colorName) },
+                                            label = { Text(colorName, fontSize = 11.sp) },
+                                            modifier = Modifier.testTag("subtitle_color_chip_$colorName")
+                                        )
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // AI Dubbing Cache Status & Redundant API Call Prevention Card
+                    Spacer(modifier = Modifier.height(12.dp))
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = if (isDubbingCached) Color(0xFF004D40).copy(alpha = 0.35f) else MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f)
+                        ),
+                        border = if (isDubbingCached) BorderStroke(1.dp, Color(0xFF00E676).copy(alpha = 0.6f)) else null,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("ai_dubbing_cache_card")
+                    ) {
+                        Column(modifier = Modifier.padding(12.dp)) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.SpaceBetween,
+                                verticalAlignment = Alignment.CenterVertically
+                            ) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Icon(
+                                        imageVector = if (isDubbingCached) Icons.Default.Bolt else Icons.Default.CloudSync,
+                                        contentDescription = null,
+                                        tint = if (isDubbingCached) Color(0xFF00E676) else MxCyan,
+                                        modifier = Modifier.size(18.dp)
+                                    )
+                                    Text(
+                                        text = if (isDubbingCached) "AI Dubbing Cached (Zero API Calls)" else "AI Dubbing Cache Available",
+                                        fontWeight = FontWeight.Bold,
+                                        fontSize = 12.sp,
+                                        color = if (isDubbingCached) Color(0xFF00E676) else MaterialTheme.colorScheme.onSurface
+                                    )
+                                }
+                                Box(
+                                    modifier = Modifier
+                                        .background(
+                                            if (isDubbingCached) Color(0xFF00E676).copy(alpha = 0.2f) else MaterialTheme.colorScheme.primary.copy(alpha = 0.15f),
+                                            RoundedCornerShape(8.dp)
+                                        )
+                                        .padding(horizontal = 6.dp, vertical = 2.dp)
+                                ) {
+                                    Text(
+                                        text = if (isDubbingCached) "Cached" else "Uncached",
+                                        fontSize = 10.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        color = if (isDubbingCached) Color(0xFF00E676) else MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+
+                            Spacer(modifier = Modifier.height(4.dp))
+                            Text(
+                                text = if (isDubbingCached) {
+                                    "This video has already been processed for ${selectedDubLanguage.name}. Audio cues and dialogue are loaded from local cache to prevent redundant Gemini API calls."
+                                } else {
+                                    "Generating subtitles and audio dubbing will automatically cache results on device for this video."
+                                },
+                                fontSize = 11.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+
+                            if (isDubbingCached) {
+                                Spacer(modifier = Modifier.height(8.dp))
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    OutlinedButton(
+                                        onClick = { viewModel.clearCacheForCurrentVideo() },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("clear_cache_video_button"),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp)
+                                    ) {
+                                        Icon(Icons.Default.DeleteOutline, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Clear Cache", fontSize = 11.sp)
+                                    }
+
+                                    Button(
+                                        onClick = { viewModel.regenerateSubtitlesForCurrentVideo() },
+                                        modifier = Modifier
+                                            .weight(1f)
+                                            .testTag("force_refresh_gemini_button"),
+                                        contentPadding = PaddingValues(horizontal = 8.dp, vertical = 4.dp),
+                                        colors = ButtonDefaults.buttonColors(containerColor = MxBlue)
+                                    ) {
+                                        Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(14.dp))
+                                        Spacer(modifier = Modifier.width(4.dp))
+                                        Text("Force Re-dub", fontSize = 11.sp)
+                                    }
+                                }
+                            }
+                        }
+                    }
+
                     Spacer(modifier = Modifier.height(14.dp))
 
                     // Cues Preview List
@@ -829,15 +1181,27 @@ fun VideoPlayerScreen(
                     Spacer(modifier = Modifier.height(12.dp))
 
                     Button(
-                        onClick = { viewModel.loadSubtitlesForCurrentVideo(selectedDubLanguage) },
+                        onClick = {
+                            if (isDubbingCached) {
+                                viewModel.regenerateSubtitlesForCurrentVideo()
+                            } else {
+                                viewModel.loadSubtitlesForCurrentVideo(selectedDubLanguage)
+                            }
+                        },
                         modifier = Modifier
                             .fillMaxWidth()
                             .testTag("regenerate_gemini_button"),
-                        colors = ButtonDefaults.buttonColors(containerColor = MxBlue)
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = if (isDubbingCached) Color(0xFF00796B) else MxBlue
+                        )
                     ) {
-                        Icon(Icons.Default.AutoAwesome, contentDescription = null, modifier = Modifier.size(16.dp))
+                        Icon(
+                            imageVector = if (isDubbingCached) Icons.Default.Refresh else Icons.Default.AutoAwesome,
+                            contentDescription = null,
+                            modifier = Modifier.size(16.dp)
+                        )
                         Spacer(modifier = Modifier.width(8.dp))
-                        Text("Regenerate Subtitles via Gemini AI")
+                        Text(if (isDubbingCached) "Force Re-analyze with Gemini API" else "Generate Subtitles via Gemini AI")
                     }
 
                     Spacer(modifier = Modifier.height(12.dp))
@@ -956,5 +1320,57 @@ fun PlayerSettingsSideSheet(
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun StepIndicatorItem(
+    title: String,
+    isActive: Boolean,
+    isCompleted: Boolean
+) {
+    val tintColor = when {
+        isCompleted -> Color(0xFF00E676)
+        isActive -> MxCyan
+        else -> Color.White.copy(alpha = 0.35f)
+    }
+
+    Row(
+        verticalAlignment = Alignment.CenterVertically,
+        horizontalArrangement = Arrangement.spacedBy(4.dp)
+    ) {
+        Box(
+            modifier = Modifier
+                .size(16.dp)
+                .background(tintColor.copy(alpha = 0.2f), CircleShape),
+            contentAlignment = Alignment.Center
+        ) {
+            if (isCompleted) {
+                Icon(
+                    imageVector = Icons.Default.Check,
+                    contentDescription = null,
+                    tint = tintColor,
+                    modifier = Modifier.size(11.dp)
+                )
+            } else if (isActive) {
+                CircularProgressIndicator(
+                    modifier = Modifier.size(10.dp),
+                    color = tintColor,
+                    strokeWidth = 1.5.dp
+                )
+            } else {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .background(tintColor, CircleShape)
+                )
+            }
+        }
+        Text(
+            text = title,
+            color = if (isActive || isCompleted) Color.White else Color.White.copy(alpha = 0.45f),
+            fontSize = 11.sp,
+            fontWeight = if (isActive || isCompleted) FontWeight.SemiBold else FontWeight.Normal
+        )
     }
 }

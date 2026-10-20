@@ -3,6 +3,9 @@ package com.example.viewmodel
 import android.app.Application
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import com.example.data.AiDubbingCacheRepository
+import com.example.data.SubtitlePreferencesRepository
+import com.example.data.SubtitleSettings
 import com.example.model.*
 import com.example.service.GeminiSubtitleService
 import kotlinx.coroutines.Job
@@ -10,6 +13,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 
@@ -27,6 +31,8 @@ enum class AspectRatioMode(val label: String) {
 class PlayerViewModel(application: Application) : AndroidViewModel(application) {
 
     private val geminiSubtitleService = GeminiSubtitleService(application)
+    private val subtitlePrefsRepo = SubtitlePreferencesRepository(application)
+    val aiDubbingCacheRepo = AiDubbingCacheRepository(application)
     val availableDubLanguages = geminiSubtitleService.availableLanguages
 
     // Theme Mode
@@ -204,14 +210,53 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private val _isAutoDubbingVoiceEnabled = MutableStateFlow(true) // AI Voice Dubbing
     val isAutoDubbingVoiceEnabled: StateFlow<Boolean> = _isAutoDubbingVoiceEnabled.asStateFlow()
 
+    private val _subtitleFontSize = MutableStateFlow(14)
+    val subtitleFontSize: StateFlow<Int> = _subtitleFontSize.asStateFlow()
+
+    private val _subtitleTextColor = MutableStateFlow("Yellow")
+    val subtitleTextColor: StateFlow<String> = _subtitleTextColor.asStateFlow()
+
     private val _isGeneratingSubtitles = MutableStateFlow(false)
     val isGeneratingSubtitles: StateFlow<Boolean> = _isGeneratingSubtitles.asStateFlow()
+
+    // Multi-stage Auto-Dubbing Visual Progress
+    private val _isAutoDubbingInProgress = MutableStateFlow(false)
+    val isAutoDubbingInProgress: StateFlow<Boolean> = _isAutoDubbingInProgress.asStateFlow()
+
+    private val _autoDubProgress = MutableStateFlow(0f)
+    val autoDubProgress: StateFlow<Float> = _autoDubProgress.asStateFlow()
+
+    private val _autoDubStageText = MutableStateFlow("")
+    val autoDubStageText: StateFlow<String> = _autoDubStageText.asStateFlow()
+
+    // Caching state for AI Dubbing
+    private val _isDubbingCached = MutableStateFlow(false)
+    val isDubbingCached: StateFlow<Boolean> = _isDubbingCached.asStateFlow()
+
+    private val _cacheStatusText = MutableStateFlow("")
+    val cacheStatusText: StateFlow<String> = _cacheStatusText.asStateFlow()
 
     private var lastSpokenCueIndex = -1
     private var playbackTimerJob: Job? = null
 
     init {
         startPlaybackTicker()
+        loadPersistedSubtitleSettings()
+    }
+
+    private fun loadPersistedSubtitleSettings() {
+        viewModelScope.launch {
+            subtitlePrefsRepo.subtitleSettingsFlow.collect { settings ->
+                val matchingLang = availableDubLanguages.firstOrNull { it.code == settings.languageCode }
+                if (matchingLang != null) {
+                    _selectedDubLanguage.value = matchingLang
+                }
+                _isSubtitlesVisible.value = settings.isSubtitlesVisible
+                _isAutoDubbingVoiceEnabled.value = settings.isAutoDubbingVoiceEnabled
+                _subtitleFontSize.value = settings.fontSizeSp
+                _subtitleTextColor.value = settings.textColorName
+            }
+        }
     }
 
     private fun startPlaybackTicker() {
@@ -255,35 +300,143 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         _isControlsVisible.value = true
         lastSpokenCueIndex = -1
 
-        // Automatically fetch / generate Gemini subtitles in selected language
-        loadSubtitlesForCurrentVideo(_selectedDubLanguage.value)
+        // Check if video is already cached for current language
+        _isDubbingCached.value = aiDubbingCacheRepo.isCached(video.id, _selectedDubLanguage.value.code, video.title)
+
+        // Automatically fetch / generate Gemini subtitles in remembered language from DataStore
+        loadSubtitlesForCurrentVideo(_selectedDubLanguage.value, forceRefresh = false)
     }
 
-    fun loadSubtitlesForCurrentVideo(language: AutoDubLanguage) {
+    fun loadSubtitlesForCurrentVideo(language: AutoDubLanguage, forceRefresh: Boolean = false) {
         val video = _currentVideo.value ?: return
         _selectedDubLanguage.value = language
-        _isGeneratingSubtitles.value = true
         lastSpokenCueIndex = -1
 
+        // Save selected language in DataStore so it is remembered across video sessions
         viewModelScope.launch {
+            subtitlePrefsRepo.saveDubLanguage(language.code)
+        }
+
+        // Check cache to avoid redundant Google Gemini API calls
+        val cached = if (!forceRefresh) {
+            aiDubbingCacheRepo.getCachedCues(video.id, language.code, video.title)
+        } else null
+
+        if (cached != null && cached.isNotEmpty()) {
+            _isDubbingCached.value = true
+            _cacheStatusText.value = "⚡ Loaded from cache (0 API calls)"
+            _activeSubtitles.value = cached
+            _isGeneratingSubtitles.value = false
+            _isAutoDubbingInProgress.value = true
+            _autoDubProgress.value = 1.0f
+            _autoDubStageText.value = "⚡ Loaded from local AI cache (0 API calls needed)"
+
+            viewModelScope.launch {
+                delay(350)
+                _isAutoDubbingInProgress.value = false
+                updateActiveSubtitleAt(_currentPositionSec.value)
+            }
+            return
+        }
+
+        // Cache miss or forceRefresh requested: Execute Gemini AI translation pipeline
+        _isDubbingCached.value = false
+        _cacheStatusText.value = if (forceRefresh) "Refreshing from Google Gemini AI..." else "Generating with Gemini AI..."
+        _isGeneratingSubtitles.value = true
+        _isAutoDubbingInProgress.value = true
+        _autoDubProgress.value = 0.15f
+        _autoDubStageText.value = "Analyzing audio tracks for \"${video.title}\"..."
+
+        viewModelScope.launch {
+            delay(500)
+            _autoDubProgress.value = 0.40f
+            _autoDubStageText.value = "Translating speech into ${language.name} via Google Gemini AI..."
+            delay(500)
+            _autoDubProgress.value = 0.70f
+            _autoDubStageText.value = "Synthesizing voiceover cues & aligning timestamps..."
+
             val cues = geminiSubtitleService.generateSubtitlesAndDubbing(video.title, language)
             _activeSubtitles.value = cues
+
+            // Cache the newly processed video & language cues to prevent redundant API calls
+            aiDubbingCacheRepo.putCues(video.id, video.title, language.code, cues)
+            _isDubbingCached.value = true
+            _cacheStatusText.value = "⚡ Processed & cached for instant future playback"
+
+            _autoDubProgress.value = 0.95f
+            _autoDubStageText.value = "Finalizing auto-dubbed audio stream (${language.name})..."
+            delay(400)
+            _autoDubProgress.value = 1.0f
+            _autoDubStageText.value = "Auto-dubbing completed & cached successfully!"
+            delay(700)
             _isGeneratingSubtitles.value = false
+            _isAutoDubbingInProgress.value = false
             updateActiveSubtitleAt(_currentPositionSec.value)
         }
     }
 
+    fun regenerateSubtitlesForCurrentVideo() {
+        loadSubtitlesForCurrentVideo(_selectedDubLanguage.value, forceRefresh = true)
+    }
+
+    fun clearCacheForCurrentVideo() {
+        val video = _currentVideo.value ?: return
+        aiDubbingCacheRepo.invalidate(video.id, _selectedDubLanguage.value.code)
+        _isDubbingCached.value = false
+        _cacheStatusText.value = "Cache cleared for this video"
+    }
+
     fun toggleSubtitleVisibility() {
-        _isSubtitlesVisible.update { !it }
+        _isSubtitlesVisible.update { current ->
+            val updated = !current
+            viewModelScope.launch {
+                subtitlePrefsRepo.saveSubtitlesVisible(updated)
+            }
+            updated
+        }
+    }
+
+    fun setSubtitlesVisible(visible: Boolean) {
+        _isSubtitlesVisible.value = visible
+        viewModelScope.launch {
+            subtitlePrefsRepo.saveSubtitlesVisible(visible)
+        }
     }
 
     fun toggleAutoDubVoice() {
-        _isAutoDubbingVoiceEnabled.update {
-            val next = !it
+        _isAutoDubbingVoiceEnabled.update { current ->
+            val next = !current
             if (!next) {
                 geminiSubtitleService.stopDubbing()
             }
+            viewModelScope.launch {
+                subtitlePrefsRepo.saveAutoDubVoiceEnabled(next)
+            }
             next
+        }
+    }
+
+    fun setAutoDubVoiceEnabled(enabled: Boolean) {
+        _isAutoDubbingVoiceEnabled.value = enabled
+        if (!enabled) {
+            geminiSubtitleService.stopDubbing()
+        }
+        viewModelScope.launch {
+            subtitlePrefsRepo.saveAutoDubVoiceEnabled(enabled)
+        }
+    }
+
+    fun setSubtitleFontSize(fontSizeSp: Int) {
+        _subtitleFontSize.value = fontSizeSp
+        viewModelScope.launch {
+            subtitlePrefsRepo.saveSubtitleFontSize(fontSizeSp)
+        }
+    }
+
+    fun setSubtitleTextColor(colorName: String) {
+        _subtitleTextColor.value = colorName
+        viewModelScope.launch {
+            subtitlePrefsRepo.saveSubtitleTextColor(colorName)
         }
     }
 
