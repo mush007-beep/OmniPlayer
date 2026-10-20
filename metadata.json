@@ -1,0 +1,6 @@
+{
+  "name": "OmniPlayer Pro",
+  "description": "Advanced Media Player with HW+ Acceleration, Equalizer, MP3 Converter, Video Cutter, Subtitles, Network Streaming, and Bio-Acoustic AI Lab.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
