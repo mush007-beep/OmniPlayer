@@ -33,6 +33,12 @@ class MainActivity : ComponentActivity() {
             val currentVideo by playerViewModel.currentVideo.collectAsState()
             val activeTab by playerViewModel.activeTab.collectAsState()
 
+            LaunchedEffect(intent) {
+                intent?.data?.let { uri ->
+                    playerViewModel.openMediaUri(uri)
+                }
+            }
+
             OmniPlayerTheme(darkTheme = isDarkMode) {
                 // If a video is playing, display the full gesture cinema player!
                 if (currentVideo != null) {
@@ -137,6 +143,17 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    override fun onUserLeaveHint() {
+        super.onUserLeaveHint()
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O) {
+            try {
+                enterPictureInPictureMode(android.app.PictureInPictureParams.Builder().build())
+            } catch (e: Exception) {
+                // ignore
             }
         }
     }

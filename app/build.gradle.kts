@@ -103,6 +103,9 @@ dependencies {
   implementation(libs.androidx.room.runtime)
   implementation(libs.coil.compose)
   implementation(libs.converter.moshi)
+  implementation("androidx.media3:media3-exoplayer:1.5.1")
+  implementation("androidx.media3:media3-ui:1.5.1")
+  implementation("androidx.media3:media3-common:1.5.1")
   // Uncomment to use Firestore:
   // implementation(libs.firebase.firestore)
 

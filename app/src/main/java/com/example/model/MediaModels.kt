@@ -20,7 +20,23 @@ data class VideoItem(
     val episodeBadge: String? = null,
     val dateText: String = "Today",
     val url: String = "",
-    val subtitles: List<String> = listOf("English [Auto-dub]", "Español", "हिन्दी")
+    val subtitles: List<String> = listOf("English [Auto-dub]", "Español", "हिन्दी"),
+    val isLocal: Boolean = false,
+    val format: String = "MP4"
+)
+
+data class AudioItem(
+    val id: String,
+    val title: String,
+    val artist: String = "Local Artist",
+    val album: String = "Internal Storage",
+    val durationText: String = "03:45",
+    val durationSeconds: Int = 225,
+    val sizeText: String = "4.2 MB",
+    val uri: String = "",
+    val dateText: String = "Today",
+    val isPlaying: Boolean = false,
+    val format: String = "MP3"
 )
 
 data class FolderItem(

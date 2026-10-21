@@ -1,13 +1,19 @@
 package com.example.viewmodel
 
 import android.app.Application
+import android.net.Uri
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
+import androidx.media3.common.MediaItem
+import androidx.media3.common.PlaybackParameters
+import androidx.media3.common.Player
+import androidx.media3.exoplayer.ExoPlayer
 import com.example.data.AiDubbingCacheRepository
 import com.example.data.SubtitlePreferencesRepository
 import com.example.data.SubtitleSettings
 import com.example.model.*
 import com.example.service.GeminiSubtitleService
+import com.example.service.LocalMediaScanner
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -30,6 +36,7 @@ enum class AspectRatioMode(val label: String) {
 
 class PlayerViewModel(application: Application) : AndroidViewModel(application) {
 
+    val localMediaScanner = LocalMediaScanner(application)
     private val geminiSubtitleService = GeminiSubtitleService(application)
     private val subtitlePrefsRepo = SubtitlePreferencesRepository(application)
     val aiDubbingCacheRepo = AiDubbingCacheRepository(application)
@@ -51,71 +58,56 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         _activeTab.value = tab
     }
 
-    // Media Library data
-    val continueWatchingList = listOf(
-        ContinueWatchingItem("cw1", "Cyberpunk 4K • Neon Syndicate", "S1 E1, 08 Jan", "Watched 85%", 0.85f, "42:35"),
-        ContinueWatchingItem("cw2", "Dolphin Ocean Odyssey", "4K Ultra HD", "Watched 45%", 0.45f, "05:49"),
-        ContinueWatchingItem("cw3", "Mystic Realm Chronicles", "S1 E3, 15 Sep 2018", "Watched 15%", 0.15f, "28:10"),
-        ContinueWatchingItem("cw4", "Bio-Acoustic Symphony", "Lossless Master", "Watched 90%", 0.90f, "04:12")
-    )
+    // Dynamic media state (No hardcoded demo videos or demo folders)
+    private val _allVideosListState = MutableStateFlow<List<VideoItem>>(emptyList())
+    val allVideosState: StateFlow<List<VideoItem>> = _allVideosListState.asStateFlow()
+    val allVideosList: List<VideoItem> get() = _allVideosListState.value
 
-    val foldersList = listOf(
-        FolderItem("Download", 1, 0),
-        FolderItem("Video", 8, 5),
-        FolderItem("Camera", 4, 0),
-        FolderItem("Movies", 12, 2),
-        FolderItem("Best Hindi TV Shows", 6, 0),
-        FolderItem("Family Videos", 12, 0),
-        FolderItem("Movie Cut", 15, 0),
-        FolderItem("Private Folder", 3, 0, isProtected = true)
-    )
+    // Dynamic folders derived from real discovered/imported media files
+    val foldersList: List<FolderItem>
+        get() {
+            val videos = _allVideosListState.value
+            return if (videos.isEmpty()) {
+                emptyList()
+            } else {
+                videos.groupBy { it.folderName }.map { (name, vids) ->
+                    FolderItem(
+                        name = name,
+                        count = vids.size,
+                        newCount = vids.count { it.isLocal }
+                    )
+                }.sortedByDescending { it.count }
+            }
+        }
 
-    val allVideosList = listOf(
-        VideoItem(
-            id = "v1",
-            title = "Movie Cut 03-01-14",
-            folderName = "Movie Cut",
-            durationText = "05:49",
-            durationSeconds = 349,
-            resolution = ResolutionBadge.ULTRA_4K,
-            sizeText = "450 MB",
-            progressPercent = 0.45f,
-            episodeBadge = "4K HDR"
-        ),
-        VideoItem(
-            id = "v2",
-            title = "Dolphin Ocean High Speed Leap",
-            folderName = "Video",
-            durationText = "42:35",
-            durationSeconds = 2555,
-            resolution = ResolutionBadge.ULTRA_8K,
-            sizeText = "1.8 GB",
-            progressPercent = 0.15f,
-            episodeBadge = "8K UHD"
-        ),
-        VideoItem(
-            id = "v3",
-            title = "Cyberpunk Night Drive 60FPS",
-            folderName = "Download",
-            durationText = "12:20",
-            durationSeconds = 740,
-            resolution = ResolutionBadge.FULL_HD,
-            sizeText = "320 MB",
-            progressPercent = 0.80f,
-            episodeBadge = "1080p"
-        ),
-        VideoItem(
-            id = "v4",
-            title = "Nature Sanctuary & Bio-Rhythm",
-            folderName = "Movies",
-            durationText = "24:18",
-            durationSeconds = 1458,
-            resolution = ResolutionBadge.FULL_HD,
-            sizeText = "680 MB",
-            progressPercent = 0.0f,
-            episodeBadge = "FHD"
-        )
-    )
+    // Dynamic user continue watching history
+    private val _continueWatchingState = MutableStateFlow<List<ContinueWatchingItem>>(emptyList())
+    val continueWatchingList: List<ContinueWatchingItem>
+        get() = _continueWatchingState.value
+
+    // Storage permission & imported media state
+    private val _hasStoragePermission = MutableStateFlow(localMediaScanner.hasStoragePermission())
+    val hasStoragePermission: StateFlow<Boolean> = _hasStoragePermission.asStateFlow()
+
+    private val _isScanningMedia = MutableStateFlow(false)
+    val isScanningMedia: StateFlow<Boolean> = _isScanningMedia.asStateFlow()
+
+    private val _importStatusMessage = MutableStateFlow<String?>(null)
+    val importStatusMessage: StateFlow<String?> = _importStatusMessage.asStateFlow()
+
+    private val _importedVideos = MutableStateFlow<List<VideoItem>>(emptyList())
+    val importedVideos: StateFlow<List<VideoItem>> = _importedVideos.asStateFlow()
+
+    private val _importedAudios = MutableStateFlow<List<AudioItem>>(emptyList())
+    val importedAudios: StateFlow<List<AudioItem>> = _importedAudios.asStateFlow()
+
+    private val _currentAudio = MutableStateFlow<AudioItem?>(null)
+    val currentAudio: StateFlow<AudioItem?> = _currentAudio.asStateFlow()
+
+    private val _isAudioPlaying = MutableStateFlow(false)
+    val isAudioPlaying: StateFlow<Boolean> = _isAudioPlaying.asStateFlow()
+
+    private var audioPlayer: android.media.MediaPlayer? = null
 
     // View & Sort Settings
     private val _viewMode = MutableStateFlow(ViewMode.FOLDERS)
@@ -236,12 +228,62 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     private val _cacheStatusText = MutableStateFlow("")
     val cacheStatusText: StateFlow<String> = _cacheStatusText.asStateFlow()
 
+    // ExoPlayer Media3 Gold-Standard Playback Engine for all video and audio formats
+    val exoPlayer: ExoPlayer by lazy {
+        ExoPlayer.Builder(application)
+            .setSeekBackIncrementMs(10000)
+            .setSeekForwardIncrementMs(10000)
+            .build().apply {
+                repeatMode = Player.REPEAT_MODE_OFF
+                addListener(object : Player.Listener {
+                    override fun onPlaybackStateChanged(playbackState: Int) {
+                        if (playbackState == Player.STATE_READY) {
+                            if (duration > 0) {
+                                _totalDurationSec.value = (duration / 1000).toInt()
+                            }
+                        } else if (playbackState == Player.STATE_ENDED) {
+                            _isPlaying.value = false
+                        }
+                    }
+
+                    override fun onIsPlayingChanged(isPlaying: Boolean) {
+                        _isPlaying.value = isPlaying
+                    }
+                })
+            }
+    }
+
     private var lastSpokenCueIndex = -1
     private var playbackTimerJob: Job? = null
 
     init {
         startPlaybackTicker()
         loadPersistedSubtitleSettings()
+        if (localMediaScanner.hasStoragePermission()) {
+            scanLocalMedia()
+        }
+    }
+
+    private fun addToContinueWatching(video: VideoItem) {
+        val newItem = ContinueWatchingItem(
+            id = video.id,
+            title = video.title,
+            episodeInfo = "${video.format} • ${video.resolution.name.replace("_", " ")}",
+            dateInfo = "Now Playing",
+            progress = 0.05f,
+            duration = video.durationText
+        )
+        _continueWatchingState.update { current ->
+            (listOf(newItem) + current.filter { it.id != video.id }).take(10)
+        }
+    }
+
+    private fun updateHistoryProgress(videoId: String, progress: Float) {
+        _continueWatchingState.update { current ->
+            current.map {
+                if (it.id == videoId) it.copy(progress = progress.coerceIn(0f, 1f)) else it
+            }
+        }
     }
 
     private fun loadPersistedSubtitleSettings() {
@@ -263,11 +305,27 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
         playbackTimerJob?.cancel()
         playbackTimerJob = viewModelScope.launch {
             while (true) {
-                delay(1000)
+                delay(500)
                 if (_isPlaying.value && _currentVideo.value != null) {
-                    val nextSec = (_currentPositionSec.value + 1).coerceAtMost(_totalDurationSec.value)
-                    _currentPositionSec.value = nextSec
-                    updateActiveSubtitleAt(nextSec)
+                    try {
+                        val currentMs = exoPlayer.currentPosition
+                        val totalMs = exoPlayer.duration
+                        if (totalMs > 0) {
+                            _totalDurationSec.value = (totalMs / 1000).toInt()
+                        }
+                        val sec = (currentMs / 1000).toInt()
+                        _currentPositionSec.value = sec
+                        updateActiveSubtitleAt(sec)
+
+                        _currentVideo.value?.let { video ->
+                            val progress = if (_totalDurationSec.value > 0) sec.toFloat() / _totalDurationSec.value else 0f
+                            updateHistoryProgress(video.id, progress)
+                        }
+                    } catch (e: Exception) {
+                        val nextSec = (_currentPositionSec.value + 1).coerceAtMost(_totalDurationSec.value)
+                        _currentPositionSec.value = nextSec
+                        updateActiveSubtitleAt(nextSec)
+                    }
                 }
             }
         }
@@ -294,11 +352,24 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     fun openVideo(video: VideoItem) {
         _currentVideo.value = video
-        _currentPositionSec.value = 2
+        _currentPositionSec.value = 0
         _totalDurationSec.value = video.durationSeconds
         _isPlaying.value = true
         _isControlsVisible.value = true
         lastSpokenCueIndex = -1
+
+        addToContinueWatching(video)
+
+        try {
+            if (video.url.isNotEmpty()) {
+                val mediaItem = MediaItem.fromUri(Uri.parse(video.url))
+                exoPlayer.setMediaItem(mediaItem)
+                exoPlayer.prepare()
+                exoPlayer.playWhenReady = true
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("PlayerViewModel", "Error loading media with ExoPlayer", e)
+        }
 
         // Check if video is already cached for current language
         _isDubbingCached.value = aiDubbingCacheRepo.isCached(video.id, _selectedDubLanguage.value.code, video.title)
@@ -442,17 +513,34 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     fun closePlayer() {
         geminiSubtitleService.stopDubbing()
+        try {
+            exoPlayer.stop()
+            exoPlayer.clearMediaItems()
+        } catch (e: Exception) {
+            // fallback
+        }
         _currentVideo.value = null
         _isPlaying.value = false
         _isQuickSettingsOpen.value = false
     }
 
     fun togglePlayPause() {
-        _isPlaying.update {
-            if (!it) {
+        try {
+            if (exoPlayer.isPlaying) {
+                exoPlayer.pause()
                 geminiSubtitleService.stopDubbing()
+                _isPlaying.value = false
+            } else {
+                exoPlayer.play()
+                _isPlaying.value = true
             }
-            !it
+        } catch (e: Exception) {
+            _isPlaying.update {
+                if (!it) {
+                    geminiSubtitleService.stopDubbing()
+                }
+                !it
+            }
         }
     }
 
@@ -487,19 +575,36 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
     }
 
     fun seekBy(seconds: Int) {
-        _currentPositionSec.update {
-            val target = (it + seconds).coerceIn(0, _totalDurationSec.value)
-            lastSpokenCueIndex = -1
-            updateActiveSubtitleAt(target)
-            target
+        try {
+            val cur = exoPlayer.currentPosition
+            val dur = exoPlayer.duration
+            val targetMs = (cur + seconds * 1000).coerceIn(0, if (dur > 0) dur else _totalDurationSec.value * 1000L)
+            exoPlayer.seekTo(targetMs)
+            _currentPositionSec.value = (targetMs / 1000).toInt()
+        } catch (e: Exception) {
+            _currentPositionSec.update {
+                (it + seconds).coerceIn(0, _totalDurationSec.value)
+            }
         }
+        lastSpokenCueIndex = -1
+        updateActiveSubtitleAt(_currentPositionSec.value)
     }
 
     fun seekToFraction(fraction: Float) {
-        val target = (fraction * _totalDurationSec.value).toInt()
-        _currentPositionSec.value = target
+        val totalMs = try {
+            if (exoPlayer.duration > 0) exoPlayer.duration else _totalDurationSec.value * 1000L
+        } catch (e: Exception) {
+            _totalDurationSec.value * 1000L
+        }
+        val targetMs = (fraction * totalMs).toLong()
+        try {
+            exoPlayer.seekTo(targetMs)
+            _currentPositionSec.value = (targetMs / 1000).toInt()
+        } catch (e: Exception) {
+            _currentPositionSec.value = (fraction * _totalDurationSec.value).toInt()
+        }
         lastSpokenCueIndex = -1
-        updateActiveSubtitleAt(target)
+        updateActiveSubtitleAt(_currentPositionSec.value)
     }
 
     // Gesture Handlers
@@ -543,10 +648,141 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     fun setPlaybackSpeed(speed: Float) {
         _playerSettings.update { it.copy(playbackSpeed = speed) }
+        try {
+            exoPlayer.playbackParameters = PlaybackParameters(speed)
+        } catch (e: Exception) {
+            // fallback in unit test environment
+        }
     }
 
     fun updateEqualizer(settings: EqualizerSettings) {
         _equalizerSettings.value = settings
+    }
+
+    fun onStoragePermissionResult(granted: Boolean) {
+        _hasStoragePermission.value = granted
+        if (granted) {
+            scanLocalMedia()
+        } else {
+            _importStatusMessage.value = "Storage permission not granted. You can still import individual files via the File Picker."
+        }
+    }
+
+    fun scanLocalMedia() {
+        viewModelScope.launch {
+            _isScanningMedia.value = true
+            _importStatusMessage.value = "Scanning local storage for videos and audios..."
+            val scannedVids = localMediaScanner.scanLocalVideos()
+            val scannedAuds = localMediaScanner.scanLocalAudios()
+
+            if (scannedVids.isNotEmpty()) {
+                _importedVideos.update { current -> (scannedVids + current).distinctBy { it.id } }
+                _allVideosListState.update { current -> (scannedVids + allVideosList).distinctBy { it.id } }
+            }
+            if (scannedAuds.isNotEmpty()) {
+                _importedAudios.update { current -> (scannedAuds + current).distinctBy { it.id } }
+            }
+
+            _isScanningMedia.value = false
+            _importStatusMessage.value = if (scannedVids.isNotEmpty() || scannedAuds.isNotEmpty()) {
+                "Found ${scannedVids.size} local video(s) & ${scannedAuds.size} audio track(s)"
+            } else {
+                "Storage scan completed. 0 additional files found in MediaStore."
+            }
+        }
+    }
+
+    fun importVideoUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            _isScanningMedia.value = true
+            val newVideos = mutableListOf<VideoItem>()
+            for (uri in uris) {
+                val item = localMediaScanner.importVideoFromUri(uri)
+                if (item != null) {
+                    newVideos.add(item)
+                }
+            }
+            if (newVideos.isNotEmpty()) {
+                _importedVideos.update { (newVideos + it).distinctBy { v -> v.id } }
+                _allVideosListState.update { (newVideos + it).distinctBy { v -> v.id } }
+                _importStatusMessage.value = "Imported ${newVideos.size} video(s) from device storage"
+            }
+            _isScanningMedia.value = false
+        }
+    }
+
+    fun importAudioUris(uris: List<Uri>) {
+        if (uris.isEmpty()) return
+        viewModelScope.launch {
+            _isScanningMedia.value = true
+            val newAudios = mutableListOf<AudioItem>()
+            for (uri in uris) {
+                val item = localMediaScanner.importAudioFromUri(uri)
+                if (item != null) {
+                    newAudios.add(item)
+                }
+            }
+            if (newAudios.isNotEmpty()) {
+                _importedAudios.update { (newAudios + it).distinctBy { a -> a.id } }
+                _importStatusMessage.value = "Imported ${newAudios.size} audio track(s) from device storage"
+            }
+            _isScanningMedia.value = false
+        }
+    }
+
+    fun playAudio(audio: AudioItem) {
+        _currentAudio.value = audio
+        _isAudioPlaying.value = true
+        try {
+            if (audio.uri.isNotEmpty()) {
+                val mediaItem = MediaItem.fromUri(Uri.parse(audio.uri))
+                exoPlayer.setMediaItem(mediaItem)
+                exoPlayer.prepare()
+                exoPlayer.playWhenReady = true
+            }
+        } catch (e: Exception) {
+            android.util.Log.e("PlayerViewModel", "Error loading audio with ExoPlayer", e)
+        }
+    }
+
+    fun toggleAudioPlayback() {
+        try {
+            if (exoPlayer.isPlaying) {
+                exoPlayer.pause()
+                _isAudioPlaying.value = false
+            } else {
+                exoPlayer.play()
+                _isAudioPlaying.value = true
+            }
+        } catch (e: Exception) {
+            _isAudioPlaying.update { !it }
+        }
+    }
+
+    fun openMediaUri(uri: Uri) {
+        viewModelScope.launch {
+            val (vid, aud) = localMediaScanner.importMediaFromUri(uri)
+            if (vid != null) {
+                _importedVideos.update { (listOf(vid) + it).distinctBy { v -> v.id } }
+                _allVideosListState.update { (listOf(vid) + it).distinctBy { v -> v.id } }
+                openVideo(vid)
+            } else if (aud != null) {
+                _importedAudios.update { (listOf(aud) + it).distinctBy { a -> a.id } }
+                playAudio(aud)
+            }
+        }
+    }
+
+    fun openNetworkStream(url: String, customTitle: String? = null) {
+        val streamItem = localMediaScanner.createMediaFromUrl(url, customTitle)
+        _importedVideos.update { (listOf(streamItem) + it).distinctBy { v -> v.id } }
+        _allVideosListState.update { (listOf(streamItem) + it).distinctBy { v -> v.id } }
+        openVideo(streamItem)
+    }
+
+    fun dismissImportMessage() {
+        _importStatusMessage.value = null
     }
 
     fun formatTime(seconds: Int): String {
@@ -557,6 +793,11 @@ class PlayerViewModel(application: Application) : AndroidViewModel(application) 
 
     override fun onCleared() {
         super.onCleared()
+        try {
+            exoPlayer.release()
+        } catch (e: Exception) {
+            // ignore
+        }
         geminiSubtitleService.release()
     }
 }

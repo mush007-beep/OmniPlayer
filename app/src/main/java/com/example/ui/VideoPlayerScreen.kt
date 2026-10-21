@@ -32,6 +32,11 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.animation.core.*
+import androidx.compose.ui.viewinterop.AndroidView
+import androidx.media3.ui.AspectRatioFrameLayout
+import androidx.media3.ui.PlayerView
+import com.example.viewmodel.AspectRatioMode
 import com.example.model.AutoDubLanguage
 import com.example.model.VideoItem
 import com.example.ui.theme.MxBlue
@@ -149,25 +154,107 @@ fun VideoPlayerScreen(
                 ),
             contentAlignment = Alignment.Center
         ) {
-            Column(horizontalAlignment = Alignment.CenterHorizontally) {
-                Icon(
-                    imageVector = Icons.Default.Movie,
-                    contentDescription = null,
-                    tint = MxCyan.copy(alpha = 0.8f),
-                    modifier = Modifier.size(96.dp)
-                )
-                Spacer(modifier = Modifier.height(16.dp))
-                Text(
-                    text = video.title,
-                    color = Color.White,
-                    fontWeight = FontWeight.Bold,
-                    fontSize = 20.sp
-                )
-                Text(
-                    text = "${video.resolution.name.replace("_", " ")} • 60 FPS • $hwAcc Hybrid Engine",
-                    color = MxCyan,
-                    fontSize = 13.sp
-                )
+            // Real Media3 PlayerView for hardware-accelerated playback of all video & audio formats
+            AndroidView(
+                factory = { ctx ->
+                    PlayerView(ctx).apply {
+                        player = viewModel.exoPlayer
+                        useController = false
+                        resizeMode = when (aspectRatio) {
+                            AspectRatioMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            AspectRatioMode.STRETCH -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                            AspectRatioMode.ORIGINAL_100 -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                            AspectRatioMode.CROP -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                        }
+                    }
+                },
+                update = { playerView ->
+                    playerView.player = viewModel.exoPlayer
+                    playerView.resizeMode = when (aspectRatio) {
+                        AspectRatioMode.FIT -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        AspectRatioMode.STRETCH -> AspectRatioFrameLayout.RESIZE_MODE_FILL
+                        AspectRatioMode.ORIGINAL_100 -> AspectRatioFrameLayout.RESIZE_MODE_FIT
+                        AspectRatioMode.CROP -> AspectRatioFrameLayout.RESIZE_MODE_ZOOM
+                    }
+                },
+                modifier = Modifier.fillMaxSize()
+            )
+
+            // Audio Track Visualizer Overlay (for music files: MP3, FLAC, WAV, AAC, etc.)
+            val isAudioTrack = video.format in listOf("MP3", "AAC", "FLAC", "WAV", "OGG", "OPUS", "M4A", "WMA", "AMR") || video.url.isEmpty()
+            if (isAudioTrack) {
+                Box(
+                    modifier = Modifier
+                        .fillMaxSize()
+                        .background(
+                            Brush.radialGradient(
+                                colors = listOf(
+                                    Color(0xFF1E293B),
+                                    Color(0xFF0F172A),
+                                    Color(0xFF020617)
+                                )
+                            )
+                        ),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Column(horizontalAlignment = Alignment.CenterHorizontally) {
+                        Box(
+                            modifier = Modifier
+                                .size(110.dp)
+                                .background(MxBlue.copy(alpha = 0.2f), CircleShape),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.MusicNote,
+                                contentDescription = null,
+                                tint = MxCyan,
+                                modifier = Modifier.size(56.dp)
+                            )
+                        }
+                        Spacer(modifier = Modifier.height(16.dp))
+                        Text(
+                            text = video.title,
+                            color = Color.White,
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 20.sp,
+                            textAlign = TextAlign.Center,
+                            modifier = Modifier.padding(horizontal = 24.dp)
+                        )
+                        Spacer(modifier = Modifier.height(6.dp))
+                        Text(
+                            text = "${video.format} High-Res Audio • HW+ Decoder",
+                            color = MxCyan,
+                            fontSize = 13.sp
+                        )
+                        Spacer(modifier = Modifier.height(20.dp))
+                        Row(
+                            horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            verticalAlignment = Alignment.Bottom,
+                            modifier = Modifier.height(48.dp)
+                        ) {
+                            val infiniteTransition = rememberInfiniteTransition(label = "audio_bars")
+                            val barCount = 18
+                            for (i in 0 until barCount) {
+                                val animHeight by infiniteTransition.animateFloat(
+                                    initialValue = 8f + (i * 3 % 20),
+                                    targetValue = if (isPlaying) 12f + ((i * 7 + 13) % 36) else 8f,
+                                    animationSpec = infiniteRepeatable(
+                                        animation = tween(durationMillis = 350 + (i * 45 % 250), easing = FastOutSlowInEasing),
+                                        repeatMode = RepeatMode.Reverse
+                                    ),
+                                    label = "bar_$i"
+                                )
+                                Box(
+                                    modifier = Modifier
+                                        .width(4.dp)
+                                        .height(animHeight.dp)
+                                        .clip(RoundedCornerShape(2.dp))
+                                        .background(if (i % 2 == 0) MxCyan else MxBlue)
+                                )
+                            }
+                        }
+                    }
+                }
             }
 
             // Real-time Gemini Subtitles & Auto-Dubbing Overlay

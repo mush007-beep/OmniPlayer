@@ -1,5 +1,7 @@
 package com.example.ui
 
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
@@ -23,11 +25,13 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.example.model.*
 import com.example.ui.theme.MxBlue
+import com.example.ui.theme.MxCyan
 import com.example.ui.theme.MxGreenSend
 import com.example.ui.theme.MxRedProgress
 import com.example.viewmodel.PlayerViewModel
@@ -43,14 +47,46 @@ fun LocalFoldersScreen(
     val sortBy by viewModel.sortBy.collectAsState()
     val sortDirection by viewModel.sortDirection.collectAsState()
     val searchQuery by viewModel.searchQuery.collectAsState()
+    val hasStoragePermission by viewModel.hasStoragePermission.collectAsState()
+    val isScanningMedia by viewModel.isScanningMedia.collectAsState()
+    val importStatusMessage by viewModel.importStatusMessage.collectAsState()
+    val allVideos by viewModel.allVideosState.collectAsState()
+    val importedVideos by viewModel.importedVideos.collectAsState()
 
     var showSortDialog by remember { mutableStateOf(false) }
     var isSearchActive by remember { mutableStateOf(false) }
-    var showWhatsAppBanner by remember { mutableStateOf(true) }
+    var showNetworkStreamDialog by remember { mutableStateOf(false) }
+    var networkUrlInput by remember { mutableStateOf("") }
+    var showImportMenu by remember { mutableStateOf(false) }
 
     val folders = viewModel.foldersList
     val continueWatching = viewModel.continueWatchingList
-    val allVideos = viewModel.allVideosList
+
+    // Runtime Permission Launcher for Media Access (READ_MEDIA_VIDEO/AUDIO or READ_EXTERNAL_STORAGE)
+    val permissionLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissionsMap ->
+        val anyGranted = permissionsMap.values.any { it }
+        viewModel.onStoragePermissionResult(anyGranted)
+    }
+
+    // Direct Local Storage Video Picker
+    val videoPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.importVideoUris(uris)
+        }
+    }
+
+    // Direct Local Storage Audio Picker
+    val audioPickerLauncher = rememberLauncherForActivityResult(
+        contract = ActivityResultContracts.OpenMultipleDocuments()
+    ) { uris ->
+        if (uris.isNotEmpty()) {
+            viewModel.importAudioUris(uris)
+        }
+    }
 
     Scaffold(
         topBar = {
@@ -82,6 +118,56 @@ fun LocalFoldersScreen(
                     }
                 },
                 actions = {
+                    Box {
+                        IconButton(
+                            onClick = { showImportMenu = true },
+                            modifier = Modifier.testTag("import_media_menu_button")
+                        ) {
+                            Icon(Icons.Default.AddCircleOutline, contentDescription = "Import Media", tint = MxBlue)
+                        }
+                        DropdownMenu(
+                            expanded = showImportMenu,
+                            onDismissRequest = { showImportMenu = false }
+                        ) {
+                            DropdownMenuItem(
+                                text = { Text("Import Video from Files") },
+                                onClick = {
+                                    showImportMenu = false
+                                    videoPickerLauncher.launch(arrayOf("video/*"))
+                                },
+                                leadingIcon = { Icon(Icons.Default.VideoCall, contentDescription = null, tint = MxBlue) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Import Audio from Files") },
+                                onClick = {
+                                    showImportMenu = false
+                                    audioPickerLauncher.launch(arrayOf("audio/*"))
+                                },
+                                leadingIcon = { Icon(Icons.Default.AudioFile, contentDescription = null, tint = MxGreenSend) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Play Online Stream / URL") },
+                                onClick = {
+                                    showImportMenu = false
+                                    showNetworkStreamDialog = true
+                                },
+                                leadingIcon = { Icon(Icons.Default.Language, contentDescription = null, tint = MxCyan) }
+                            )
+                            DropdownMenuItem(
+                                text = { Text("Scan Device Storage") },
+                                onClick = {
+                                    showImportMenu = false
+                                    if (hasStoragePermission) {
+                                        viewModel.scanLocalMedia()
+                                    } else {
+                                        permissionLauncher.launch(viewModel.localMediaScanner.getRequiredPermissions())
+                                    }
+                                },
+                                leadingIcon = { Icon(Icons.Default.Refresh, contentDescription = null) }
+                            )
+                        }
+                    }
+
                     IconButton(
                         onClick = { isSearchActive = !isSearchActive },
                         modifier = Modifier.testTag("search_toggle_button")
@@ -136,153 +222,331 @@ fun LocalFoldersScreen(
                 .padding(innerPadding)
                 .background(MaterialTheme.colorScheme.background)
         ) {
-            // 1. Save WhatsApp Status Banner (Screenshot 3)
-            if (showWhatsAppBanner) {
+            // Storage Permission Request Banner (READ_MEDIA_VIDEO/AUDIO & READ_EXTERNAL_STORAGE)
+            if (!hasStoragePermission) {
                 item {
                     Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.errorContainer.copy(alpha = 0.45f)
+                        ),
+                        shape = RoundedCornerShape(16.dp),
                         modifier = Modifier
                             .fillMaxWidth()
                             .padding(horizontal = 16.dp, vertical = 6.dp)
-                            .testTag("whatsapp_status_banner"),
-                        shape = RoundedCornerShape(12.dp),
-                        colors = CardDefaults.cardColors(
-                            containerColor = MaterialTheme.colorScheme.surfaceVariant
-                        )
+                            .testTag("storage_permission_card")
                     ) {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .padding(horizontal = 14.dp, vertical = 10.dp),
-                            verticalAlignment = Alignment.CenterVertically
-                        ) {
-                            IconButton(
-                                onClick = { showWhatsAppBanner = false },
-                                modifier = Modifier.size(24.dp)
+                        Column(modifier = Modifier.padding(14.dp)) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
                             ) {
-                                Icon(Icons.Default.Close, contentDescription = "Dismiss", modifier = Modifier.size(16.dp))
+                                Icon(
+                                    imageVector = Icons.Default.FolderSpecial,
+                                    contentDescription = null,
+                                    tint = MxBlue,
+                                    modifier = Modifier.size(24.dp)
+                                )
+                                Text(
+                                    text = "Device Storage Permission Required",
+                                    fontWeight = FontWeight.Bold,
+                                    fontSize = 14.sp
+                                )
                             }
-                            Spacer(modifier = Modifier.width(10.dp))
-                            Box(
-                                modifier = Modifier
-                                    .size(32.dp)
-                                    .background(MxGreenSend, CircleShape),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Icon(Icons.Default.ChatBubble, contentDescription = null, tint = Color.White, modifier = Modifier.size(18.dp))
-                            }
-                            Spacer(modifier = Modifier.width(12.dp))
+                            Spacer(modifier = Modifier.height(4.dp))
                             Text(
-                                text = "Save WhatsApp Status",
-                                fontWeight = FontWeight.SemiBold,
-                                fontSize = 14.sp,
-                                modifier = Modifier.weight(1f)
+                                text = "Allow access to READ_MEDIA_VIDEO & READ_MEDIA_AUDIO (or READ_EXTERNAL_STORAGE) so OmniPlayer can automatically discover, play, and auto-dub local videos & songs on this device.",
+                                fontSize = 12.sp,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
                             )
-                            Icon(Icons.Default.ChevronRight, contentDescription = null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                            Spacer(modifier = Modifier.height(10.dp))
+                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                Button(
+                                    onClick = {
+                                        permissionLauncher.launch(viewModel.localMediaScanner.getRequiredPermissions())
+                                    },
+                                    modifier = Modifier.testTag("grant_storage_permission_button"),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MxBlue)
+                                ) {
+                                    Icon(Icons.Default.Security, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Grant Storage Access", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                                OutlinedButton(
+                                    onClick = { videoPickerLauncher.launch(arrayOf("video/*")) },
+                                    modifier = Modifier.testTag("open_file_picker_button")
+                                ) {
+                                    Icon(Icons.Default.FolderOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(4.dp))
+                                    Text("Pick File", fontSize = 12.sp)
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            // 2. Continue Watching Carousel (Screenshot 3)
-            item {
-                Column(modifier = Modifier.padding(top = 10.dp, bottom = 12.dp)) {
-                    Row(
+            // Import Status Feedback Banner
+            if (importStatusMessage != null) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(
+                            containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.6f)
+                        ),
+                        shape = RoundedCornerShape(12.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .padding(horizontal = 16.dp),
-                        horizontalArrangement = Arrangement.SpaceBetween,
-                        verticalAlignment = Alignment.CenterVertically
+                            .padding(horizontal = 16.dp, vertical = 4.dp)
+                            .testTag("import_status_card")
                     ) {
-                        Text(
-                            text = "Continue Watching",
-                            fontWeight = FontWeight.Bold,
-                            fontSize = 16.sp,
-                            color = MaterialTheme.colorScheme.onBackground
-                        )
-                        Icon(Icons.Default.ChevronRight, contentDescription = "View all", tint = MaterialTheme.colorScheme.onSurfaceVariant)
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 12.dp, vertical = 8.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.SpaceBetween
+                        ) {
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                                modifier = Modifier.weight(1f)
+                            ) {
+                                Icon(Icons.Default.CheckCircle, contentDescription = null, tint = MxGreenSend, modifier = Modifier.size(18.dp))
+                                Text(text = importStatusMessage ?: "", fontSize = 12.sp, fontWeight = FontWeight.Medium)
+                            }
+                            IconButton(onClick = { viewModel.dismissImportMessage() }, modifier = Modifier.size(24.dp)) {
+                                Icon(Icons.Default.Close, contentDescription = "Dismiss", modifier = Modifier.size(14.dp))
+                            }
+                        }
                     }
+                }
+            }
 
-                    Spacer(modifier = Modifier.height(10.dp))
+            // Quick Import Action Chips
+            item {
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .horizontalScroll(rememberScrollState())
+                        .padding(horizontal = 16.dp, vertical = 6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    AssistChip(
+                        onClick = { videoPickerLauncher.launch(arrayOf("video/*")) },
+                        label = { Text("+ Import Video", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                        leadingIcon = { Icon(Icons.Default.VideoCall, contentDescription = null, modifier = Modifier.size(16.dp), tint = MxBlue) },
+                        modifier = Modifier.testTag("quick_import_video_chip")
+                    )
+                    AssistChip(
+                        onClick = { audioPickerLauncher.launch(arrayOf("audio/*")) },
+                        label = { Text("+ Import Audio", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                        leadingIcon = { Icon(Icons.Default.AudioFile, contentDescription = null, modifier = Modifier.size(16.dp), tint = MxGreenSend) },
+                        modifier = Modifier.testTag("quick_import_audio_chip")
+                    )
+                    AssistChip(
+                        onClick = { showNetworkStreamDialog = true },
+                        label = { Text("🌐 Stream URL", fontSize = 11.sp, fontWeight = FontWeight.Bold) },
+                        leadingIcon = { Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(16.dp), tint = MxCyan) },
+                        modifier = Modifier.testTag("quick_stream_url_chip")
+                    )
+                    AssistChip(
+                        onClick = {
+                            if (hasStoragePermission) {
+                                viewModel.scanLocalMedia()
+                            } else {
+                                permissionLauncher.launch(viewModel.localMediaScanner.getRequiredPermissions())
+                            }
+                        },
+                        label = {
+                            Text(if (isScanningMedia) "Scanning..." else "🔄 Rescan Storage", fontSize = 11.sp)
+                        },
+                        modifier = Modifier.testTag("quick_rescan_storage_chip")
+                    )
+                }
+            }
 
-                    Row(
+            // Continue Watching Carousel (Only shown when real history exists)
+            if (continueWatching.isNotEmpty()) {
+                item {
+                    Column(modifier = Modifier.padding(top = 10.dp, bottom = 12.dp)) {
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "Continue Watching",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 16.sp,
+                                color = MaterialTheme.colorScheme.onBackground
+                            )
+                        }
+
+                        Spacer(modifier = Modifier.height(10.dp))
+
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .horizontalScroll(rememberScrollState())
+                                .padding(horizontal = 16.dp),
+                            horizontalArrangement = Arrangement.spacedBy(12.dp)
+                        ) {
+                            continueWatching.forEach { item ->
+                                ContinueWatchingCard(
+                                    item = item,
+                                    onClick = {
+                                        val matchedVideo = allVideos.firstOrNull { it.id == item.id } ?: allVideos.firstOrNull()
+                                        if (matchedVideo != null) {
+                                            viewModel.openVideo(matchedVideo)
+                                        }
+                                    }
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // Universal Media Hub Empty State (when no media is discovered yet)
+            if (folders.isEmpty() && allVideos.isEmpty()) {
+                item {
+                    Card(
+                        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surfaceVariant),
+                        shape = RoundedCornerShape(16.dp),
                         modifier = Modifier
                             .fillMaxWidth()
-                            .horizontalScroll(rememberScrollState())
-                            .padding(horizontal = 16.dp),
-                        horizontalArrangement = Arrangement.spacedBy(12.dp)
+                            .padding(horizontal = 16.dp, vertical = 12.dp)
+                            .testTag("all_formats_player_hub_card")
                     ) {
-                        continueWatching.forEach { item ->
-                            ContinueWatchingCard(
-                                item = item,
-                                onClick = {
-                                    val matchedVideo = allVideos.firstOrNull { it.id == item.id } ?: allVideos.first()
-                                    viewModel.openVideo(matchedVideo)
-                                }
+                        Column(
+                            modifier = Modifier.padding(20.dp),
+                            horizontalAlignment = Alignment.CenterHorizontally
+                        ) {
+                            Box(
+                                modifier = Modifier
+                                    .size(64.dp)
+                                    .background(MxBlue.copy(alpha = 0.15f), CircleShape),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Icon(Icons.Default.PlayCircle, contentDescription = null, tint = MxBlue, modifier = Modifier.size(36.dp))
+                            }
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Text(
+                                text = "Universal Media Player",
+                                fontWeight = FontWeight.Bold,
+                                fontSize = 18.sp
                             )
+                            Spacer(modifier = Modifier.height(6.dp))
+                            Text(
+                                text = "Play any video or audio format directly on your device with HW+ acceleration & AI subtitles.",
+                                fontSize = 12.sp,
+                                textAlign = TextAlign.Center,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                            Spacer(modifier = Modifier.height(12.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.Center
+                            ) {
+                                val formats = listOf("MP4", "MKV", "WEBM", "AVI", "TS", "FLAC", "MP3", "WAV", "AAC", "HLS")
+                                Text(
+                                    text = formats.joinToString(" • "),
+                                    fontSize = 11.sp,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MxCyan
+                                )
+                            }
+                            Spacer(modifier = Modifier.height(16.dp))
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                Button(
+                                    onClick = { videoPickerLauncher.launch(arrayOf("video/*", "audio/*")) },
+                                    modifier = Modifier.weight(1f),
+                                    colors = ButtonDefaults.buttonColors(containerColor = MxBlue)
+                                ) {
+                                    Icon(Icons.Default.FileOpen, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Open File", fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                                }
+                                OutlinedButton(
+                                    onClick = { showNetworkStreamDialog = true },
+                                    modifier = Modifier.weight(1f)
+                                ) {
+                                    Icon(Icons.Default.Language, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(modifier = Modifier.width(6.dp))
+                                    Text("Stream URL", fontSize = 12.sp)
+                                }
+                            }
                         }
                     }
                 }
             }
 
             // 3. Folders Section Header
-            item {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 16.dp, vertical = 8.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Text(
-                        text = "Folders (${folders.size})",
-                        fontWeight = FontWeight.Bold,
-                        fontSize = 15.sp,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        text = "${sortDirection.name.replace("_", " ")} • ${layoutMode.name}",
-                        fontSize = 12.sp,
-                        color = MxBlue
-                    )
-                }
-            }
-
-            // 4. Folders Content (List or Grid)
-            if (layoutMode == LayoutMode.LIST) {
-                items(folders) { folder ->
-                    FolderListItem(
-                        folder = folder,
-                        onClick = {
-                            val target = allVideos.firstOrNull { it.folderName == folder.name } ?: allVideos.first()
-                            viewModel.openVideo(target)
-                        }
-                    )
-                }
-            } else {
+            if (folders.isNotEmpty()) {
                 item {
-                    Column(modifier = Modifier.padding(horizontal = 16.dp)) {
-                        val chunked = folders.chunked(3)
-                        chunked.forEach { rowItems ->
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .padding(vertical = 6.dp),
-                                horizontalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                rowItems.forEach { folder ->
-                                    Box(modifier = Modifier.weight(1f)) {
-                                        FolderGridItem(
-                                            folder = folder,
-                                            onClick = {
-                                                val target = allVideos.firstOrNull { it.folderName == folder.name } ?: allVideos.first()
-                                                viewModel.openVideo(target)
-                                            }
-                                        )
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 16.dp, vertical = 8.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Text(
+                            text = "Folders (${folders.size})",
+                            fontWeight = FontWeight.Bold,
+                            fontSize = 15.sp,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant
+                        )
+                        Text(
+                            text = "${sortDirection.name.replace("_", " ")} • ${layoutMode.name}",
+                            fontSize = 12.sp,
+                            color = MxBlue
+                        )
+                    }
+                }
+
+                // 4. Folders Content (List or Grid)
+                if (layoutMode == LayoutMode.LIST) {
+                    items(folders) { folder ->
+                        FolderListItem(
+                            folder = folder,
+                            onClick = {
+                                val target = allVideos.firstOrNull { it.folderName == folder.name } ?: allVideos.firstOrNull()
+                                if (target != null) viewModel.openVideo(target)
+                            }
+                        )
+                    }
+                } else {
+                    item {
+                        Column(modifier = Modifier.padding(horizontal = 16.dp)) {
+                            val chunked = folders.chunked(3)
+                            chunked.forEach { rowItems ->
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .padding(vertical = 6.dp),
+                                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                                ) {
+                                    rowItems.forEach { folder ->
+                                        Box(modifier = Modifier.weight(1f)) {
+                                            FolderGridItem(
+                                                folder = folder,
+                                                onClick = {
+                                                    val target = allVideos.firstOrNull { it.folderName == folder.name } ?: allVideos.firstOrNull()
+                                                    if (target != null) viewModel.openVideo(target)
+                                                }
+                                            )
+                                        }
                                     }
-                                }
-                                if (rowItems.size < 3) {
-                                    repeat(3 - rowItems.size) {
-                                        Spacer(modifier = Modifier.weight(1f))
+                                    if (rowItems.size < 3) {
+                                        repeat(3 - rowItems.size) {
+                                            Spacer(modifier = Modifier.weight(1f))
+                                        }
                                     }
                                 }
                             }
@@ -327,6 +591,59 @@ fun LocalFoldersScreen(
             onSelectSort = { viewModel.setSortBy(it) },
             onSelectDirection = { viewModel.setSortDirection(it) },
             onDismiss = { showSortDialog = false }
+        )
+    }
+
+    // Play from Network URL / Stream Dialog
+    if (showNetworkStreamDialog) {
+        AlertDialog(
+            onDismissRequest = { showNetworkStreamDialog = false },
+            title = {
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Icon(Icons.Default.Language, contentDescription = null, tint = MxCyan)
+                    Text("Play Online Stream / URL", fontWeight = FontWeight.Bold, fontSize = 17.sp)
+                }
+            },
+            text = {
+                Column {
+                    Text(
+                        text = "Paste any media URL (MP4, MKV, WebM, MP3, AAC, FLAC, HLS .m3u8, DASH .mpd):",
+                        fontSize = 12.sp,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Spacer(modifier = Modifier.height(10.dp))
+                    OutlinedTextField(
+                        value = networkUrlInput,
+                        onValueChange = { networkUrlInput = it },
+                        placeholder = { Text("https://example.com/video.mp4") },
+                        singleLine = true,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("network_url_input_field")
+                    )
+                }
+            },
+            confirmButton = {
+                Button(
+                    onClick = {
+                        if (networkUrlInput.isNotBlank()) {
+                            viewModel.openNetworkStream(networkUrlInput.trim())
+                            showNetworkStreamDialog = false
+                            networkUrlInput = ""
+                        }
+                    },
+                    colors = ButtonDefaults.buttonColors(containerColor = MxBlue),
+                    modifier = Modifier.testTag("play_network_stream_button")
+                ) {
+                    Text("Play Now")
+                }
+            },
+            dismissButton = {
+                TextButton(onClick = { showNetworkStreamDialog = false }) {
+                    Text("Cancel")
+                }
+            }
         )
     }
 }
